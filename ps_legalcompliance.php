@@ -58,6 +58,11 @@ class Ps_LegalCompliance extends Module
     const LEGAL_ENVIRONMENTAL = 'LEGAL_ENVIRONMENTAL';
     const LEGAL_SHIP_PAY = 'LEGAL_SHIP_PAY';
 
+    /**
+     * @var string Name of the module running on PS 1.6.x. Used for data migration.
+     */
+    const PS_16_EQUIVALENT_MODULE = 'advancedeucompliance';
+
     public function __construct(EntityManager $entity_manager,
                                 FileSystem $fs,
                                 EmailLister $email)
@@ -110,8 +115,24 @@ class Ps_LegalCompliance extends Module
             $this->registerHook('displayOverrideTemplate') &&
             $this->registerHook('displayCheckoutSummaryTop') &&
             $this->registerHook('sendMailAlterTemplateVars') &&
-            $this->registerHook('displayReassurance') &&
-            $this->createConfig() &&
+            $this->registerHook('displayReassurance');
+
+        if (!$return) {
+            return false;
+        }
+
+        if ($this->uninstallPrestaShop16Module()) {
+            // Set new data on 1.7
+            Configuration::updateValue('AEUC_LABEL_CUSTOM_CART_TEXT', $this->generateDefaultCartTextValues());
+            Configuration::updateValue('AEUC_LABEL_DELIVERY_ADDITIONAL', false);
+            Configuration::updateValue('AEUC_LABEL_UNIT_PRICE', true);
+            Configuration::updateValue('PS_TAX_DISPLAY', true);
+            Configuration::updateValue('PS_FINAL_SUMMARY_ENABLED', true);
+        } else {
+            $result = $result && $this->createConfig();
+        }
+
+        $result = $result &&
             $this->generateAndLinkCMSPages() &&
             $this->removeCMSPagesIfNeeded() &&
             $this->setLegalContentToOrderMails() &&
@@ -120,6 +141,27 @@ class Ps_LegalCompliance extends Module
         $this->emptyTemplatesCache();
 
         return (bool) $return;
+    }
+
+    /**
+     * Migrate data from 1.6 equivalent module (if applicable), then uninstall
+     */
+    public function uninstallPrestaShop16Module()
+    {
+        if (!Module::isInstalled(self::PS_16_EQUIVALENT_MODULE)) {
+            return false;
+        }
+        $oldModule = Module::getInstanceByName(self::PS_16_EQUIVALENT_MODULE);
+        if ($oldModule) {
+            // This closure calls the parent class to prevent data to be erased
+            // It allows the new module to be configured without migration
+            $parentUninstallClosure = function() {
+                return parent::uninstall();
+            };
+            $parentUninstallClosure = $parentUninstallClosure->bindTo($oldModule, get_class($oldModule));
+            $parentUninstallClosure();
+        }
+        return true;
     }
 
     public function hideWirePaymentInviteAtOrderConfirmation()
@@ -218,15 +260,6 @@ class Ps_LegalCompliance extends Module
 
     public function createConfig()
     {
-        $custom_cart_text_values = array();
-
-        $langs_repository = $this->entity_manager->getRepository('Language');
-        $langs = $langs_repository->findAll();
-
-        foreach ($langs as $lang) {
-            $custom_cart_text_values[(int) $lang->id] = $this->trans('The order will only be confirmed when you click on the button \'Order with an obligation to pay\' at the end of the checkout!', array(), 'Modules.Legalcompliance.Shop', $lang->locale);
-        }
-
         /* Base settings */
         $this->processAeucFeatReorder(true);
         $this->processAeucLabelRevocationTOS(false);
@@ -237,7 +270,7 @@ class Ps_LegalCompliance extends Module
         $this->processAeucLabelShippingIncExc(false);
         $this->processAeucLabelCombinationFrom(true);
 
-        return Configuration::updateValue('AEUC_LABEL_CUSTOM_CART_TEXT', $custom_cart_text_values) &&
+        return Configuration::updateValue('AEUC_LABEL_CUSTOM_CART_TEXT', $this->generateDefaultCartTextValues()) &&
                Configuration::updateValue('AEUC_LABEL_DELIVERY_ADDITIONAL', false) &&
                Configuration::updateValue('AEUC_LABEL_SPECIFIC_PRICE', false) &&
                Configuration::updateValue('AEUC_LABEL_UNIT_PRICE', true) &&
@@ -248,6 +281,19 @@ class Ps_LegalCompliance extends Module
                Configuration::updateValue('AEUC_LABEL_COMBINATION_FROM', true) &&
                Configuration::updateValue('PS_TAX_DISPLAY', true) &&
                Configuration::updateValue('PS_FINAL_SUMMARY_ENABLED', true);
+    }
+
+    private function generateDefaultCartTextValues()
+    {
+        $customCartTextValues = array();
+
+        $langsRepository = $this->entity_manager->getRepository('Language');
+        $langs = $langsRepository->findAll();
+
+        foreach ($langs as $lang) {
+            $customCartTextValues[(int) $lang->id] = $this->trans('The order will only be confirmed when you click on the button \'Order with an obligation to pay\' at the end of the checkout!', array(), 'Modules.Legalcompliance.Shop', $lang->locale);
+        }
+        return $customCartTextValues;
     }
 
     public function generateAndLinkCMSPages()
